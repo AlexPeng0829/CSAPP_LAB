@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "signal.h": "c",
+        "unistd.h": "c",
+        "string.h": "c",
+        "signal-defs.h": "c"
+    }
+}
