@@ -1,2 +1,4 @@
 *.o
 *.pyc
+09-proxylab/client
+09-proxylab/proxy
