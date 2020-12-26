@@ -9,6 +9,8 @@
 # 
 #     usage: ./driver.sh
 # 
+PS4='\033[32m:${LINENO}+\033[0m'
+set -x
 
 # Point values
 MAX_BASIC=40
@@ -19,7 +21,7 @@ MAX_CACHE=15
 HOME_DIR=`pwd`
 PROXY_DIR="./.proxy"
 NOPROXY_DIR="./.noproxy"
-TIMEOUT=5
+TIMEOUT=500
 MAX_RAND=63000
 PORT_START=1024
 PORT_MAX=65000
@@ -247,8 +249,10 @@ do
     download_noproxy $NOPROXY_DIR ${file} "http://localhost:${tiny_port}/${file}"
 
     # Compare the two files
+    pwd
+    echo ${PROXY_DIR}/${file}
     echo "   Comparing the two files"
-    diff -q ${PROXY_DIR}/${file} ${NOPROXY_DIR}/${file} &> /dev/null
+    diff -q ${PROXY_DIR}/${file} ${NOPROXY_DIR}/${file}
     if [ $? -eq 0 ]; then
         numSucceeded=`expr ${numSucceeded} + 1`
         echo "   Success: Files are identical."
@@ -298,7 +302,7 @@ wait_for_port_use "${proxy_port}"
 # Run a special blocking nop-server that never responds to requests
 nop_port=$(free_port)
 echo "Starting the blocking NOP server on port ${nop_port}"
-./nop-server.py ${nop_port} &> /dev/null &
+python3 nop-server.py ${nop_port} &> /dev/null &
 nop_pid=$!
 
 # Wait for the nop server to start in earnest
@@ -406,4 +410,3 @@ maxScore=`expr ${MAX_BASIC} + ${MAX_CACHE} + ${MAX_CONCURRENCY}`
 echo ""
 echo "totalScore: ${totalScore}/${maxScore}"
 exit
-
