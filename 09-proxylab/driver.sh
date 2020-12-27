@@ -9,8 +9,8 @@
 # 
 #     usage: ./driver.sh
 # 
-PS4='\033[32m:${LINENO}+\033[0m'
-set -x
+# PS4='\033[32m:${LINENO}+\033[0m'
+# set -x
 
 # Point values
 MAX_BASIC=40
@@ -21,7 +21,7 @@ MAX_CACHE=15
 HOME_DIR=`pwd`
 PROXY_DIR="./.proxy"
 NOPROXY_DIR="./.noproxy"
-TIMEOUT=500
+TIMEOUT=5
 MAX_RAND=63000
 PORT_START=1024
 PORT_MAX=65000
@@ -145,6 +145,7 @@ function free_port {
 
 # Kill any stray proxies or tiny servers owned by this user
 killall -q proxy tiny nop-server.py 2> /dev/null
+clear_dirs
 
 # Make sure we have a Tiny directory
 if [ ! -d ./tiny ]

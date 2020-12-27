@@ -2,7 +2,8 @@
 *.pyc
 **/.vscode
 
-# for proxlab
-.proxy
+# for proxylab
+09-proxylab/.proxy
+09-proxylab/.noproxy
 09-proxylab/client
 09-proxylab/proxy
