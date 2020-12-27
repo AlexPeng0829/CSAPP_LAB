@@ -7,32 +7,15 @@
 #define MAX_NUM 128
 #define MAX_BUF_LEN 512
 
-struct Host
+struct HttpRequest
 {
-    char ip[32];
-    char port[16];
+    char *request;
+    char *host;
+    char *file;
 };
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
-
-char *strip_host_prefix(char **buffer)
-{
-    char *host_start;
-    if (strstr(buffer[1], "https://") != NULL)
-    {
-        host_start = &buffer[1][8];
-    }
-    else if (strstr(buffer[1], "http://") != NULL)
-    {
-        host_start = &buffer[1][7];
-    }
-    else
-    {
-        host_start = &buffer[1][0];
-    }
-    return host_start;
-}
 
 int parse_http_request(char *input, char *output, char *request_host)
 {
@@ -144,7 +127,7 @@ void *proxy_thread(void *conn_fd_p)
     Rio_readinitb(&rio_client_buf, conn_fd);
     while (1)
     {
-        char *request_host[64];
+        char request_host[64];
         Rio_readlineb(&rio_client_buf, buf_recv, MAX_BUF_LEN);
         printf("Proxy receive %ld byte(s) from client, contents: %s", strlen(buf_recv), buf_recv);
         // Rio_writen(conn_fd, buf_recv, strlen(buf_recv));
