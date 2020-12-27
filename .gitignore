@@ -1,4 +1,8 @@
 *.o
 *.pyc
+**/.vscode
+
+# for proxlab
+.proxy
 09-proxylab/client
 09-proxylab/proxy
