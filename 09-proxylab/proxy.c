@@ -44,7 +44,7 @@ struct MemCacheManager
 struct MemCacheManager cache_manager;
 
 //TODO Add synchronization and lock for multi_thread
-struct MemCache *check_cached(char *request_host, char *request_file)
+struct MemCache *check_cached(const char *const request_host, const char *const request_file)
 {
     struct MemCache *cur = cache_manager.head;
     struct MemCache *prev = NULL;
@@ -68,7 +68,7 @@ struct MemCache *check_cached(char *request_host, char *request_file)
 }
 
 //TODO Add synchronization and lock for multi_thread
-int cache_oject(char *request_host, char *request_file, char *recv_buf, int object_size)
+int cache_oject(const char *const request_host, const char *const request_file, const char *const recv_buf, const int object_size)
 {
     struct MemCache *new_head = (struct MemCache *)malloc(sizeof(struct MemCache));
     new_head->data = (char *)malloc(object_size);
@@ -109,7 +109,7 @@ int cache_oject(char *request_host, char *request_file, char *recv_buf, int obje
  * @param[out] request_file           requeste file path on server
  * @return int return 0 on success, return -1 on failure
  */
-int parse_http_request(char *input, char *request_literal, char *request_host, char *request_file)
+int parse_http_request(const char *const input, const char *const request_literal, const char *const request_host, const char *const request_file)
 {
     int i = 0;
     int count = 0;
@@ -178,9 +178,14 @@ int parse_http_request(char *input, char *request_literal, char *request_host, c
                     break;
                 }
             }
-            printf("%s[proxy server] client request_type: %s%s\n", KGRN, request_type, KRST);
-            printf("%s[proxy server] client request_host: %s%s\n", KGRN, request_host, KRST);
-            printf("%s[proxy server] client request_file: %s%s\n", KGRN, request_file, KRST);
+            // in case no / specified
+            if (next_token_type == K_HOST)
+            {
+                *request_file_ptr++ = '/';
+            }
+            printf("%s[proxy server] client request_type: %s%s\n", KGRN, KRST, request_type);
+            printf("%s[proxy server] client request_host: %s%s\n", KGRN, KRST, request_host);
+            printf("%s[proxy server] client request_file: %s%s\n", KGRN, KRST, request_file);
             if (strcmp(request_type, "GET ") != 0)
             {
                 printf("%s[proxy server] request method:%s not supported! %s\n", KGRN, request_type, KRST);
@@ -202,7 +207,7 @@ int parse_http_request(char *input, char *request_literal, char *request_host, c
     return 0;
 }
 
-void do_proxy(const char *http_request, const char *request_host, char *request_file, int conn_fd)
+void do_proxy(const char *const http_request, const char *const request_host, const char *const request_file, const int conn_fd)
 {
     // A naive implementation, recv_buffer can be a finer granularity
     char recv_buffer[MAX_OBJECT_SIZE];
@@ -264,8 +269,8 @@ void do_proxy(const char *http_request, const char *request_host, char *request_
 void *proxy_thread(void *conn_fd_p)
 {
     char buf_line[MAX_LINE_LEN];
-    char http_request[MAX_BUF_LEN];
     char buf_recv[MAX_BUF_LEN];
+    char forwarded_http_request[MAX_BUF_LEN];
     char *buf_ptr = buf_recv;
     rio_t rio_client_buf;
     int conn_fd = *(int *)conn_fd_p;
@@ -279,10 +284,10 @@ void *proxy_thread(void *conn_fd_p)
         memset(request_host, 0, HOST_LEN);
         memset(request_file, 0, FILE_LEN);
         memset(buf_recv, 0, MAX_BUF_LEN);
-        memset(http_request, 0, MAX_BUF_LEN);
+        memset(forwarded_http_request, 0, MAX_BUF_LEN);
 
         int byte_read = 0;
-        int64_t count = 0;
+        int count = 0;
         // fetch and accumulate one http request
         while (1)
         {
@@ -296,7 +301,7 @@ void *proxy_thread(void *conn_fd_p)
             if (byte_read == 0)
             {
                 count++;
-                if (count % 10000000 == 0)
+                if (count % 100000000 == 0)
                 {
                     printf("%s[proxy server] waiting... %s\n", KGRN, KRST);
                 }
@@ -312,8 +317,14 @@ void *proxy_thread(void *conn_fd_p)
             }
         }
 
+        // an empty line
+        if (strlen(buf_recv) == 2)
+        {
+            continue;
+        }
+
         // parse the http request, only GET method is supported
-        if (parse_http_request(buf_recv, http_request, request_host, request_file) != 0)
+        if (parse_http_request(buf_recv, forwarded_http_request, request_host, request_file) != 0)
         {
             char *error_message = "HTTP/1.0 501 Not implemented\r\n\r\n";
             Rio_writen(conn_fd, error_message, strlen(error_message));
@@ -325,11 +336,14 @@ void *proxy_thread(void *conn_fd_p)
         if (object)
         {
             // forward reply to client
+            printf("%s[proxy server] find cache object locally, sending to client%s\n", KGRN, KRST);
+            char *header_message = "HTTP/1.0 200 OK\r\n";
+            Rio_writen(conn_fd, header_message, strlen(header_message));
             Rio_writen(conn_fd, object->data, object->size);
         }
         else
         {
-            do_proxy(http_request, request_host, request_file, conn_fd);
+            do_proxy(forwarded_http_request, request_host, request_file, conn_fd);
         }
     }
     // Should never reach here
