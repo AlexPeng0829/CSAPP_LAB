@@ -8,6 +8,19 @@
 #define FILE_LEN 64
 #define MAX_NUM 128
 #define MAX_BUF_LEN 512
+#define MAX_LINE_LEN 64
+
+#define KRST "\033[0m"
+#define KRED "\033[31m"
+#define KGRN "\033[32m"
+#define KYEL "\033[33m"
+#define KBLU "\033[34m"
+#define KPUR "\033[35m"
+
+#define K_METHOD 1
+#define K_HOST 2
+#define K_FILE 3
+#define K_UNKNOWN 4
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
@@ -87,58 +100,100 @@ int cache_oject(char *request_host, char *request_file, char *recv_buf, int obje
     return 0;
 }
 
+/**
+ * @brief parse the raw http request and extract the request host and request file, generate the http request
+ * which would be sent to server if necessary
+ * @param[in]  input                  input http request string
+ * @param[out] request_literal        output http request sent to server
+ * @param[out] request_host           hostname: [ip:port]
+ * @param[out] request_file           requeste file path on server
+ * @return int return 0 on success, return -1 on failure
+ */
 int parse_http_request(char *input, char *request_literal, char *request_host, char *request_file)
 {
     int i = 0;
     int count = 0;
     char buffer[3][64];
-    char *request_type = buffer[0];
     char *http_version;
-    char *token;
     char *host_start;
 
-    token = strtok(input, " ");
+    char *token;
+    char buf_line[MAX_LINE_LEN];
+    int first_line = 1;
+    char request_type[MAX_LINE_LEN];
+    memset(request_type, 0, MAX_LINE_LEN);
+    char *request_type_ptr = request_type;
+    char *request_host_ptr = request_host;
+    char *request_file_ptr = request_file;
+
+    printf("%s[proxy server] client full http request:%s\n-----------------------------------\n%s-----------------------------------\n", KGRN, KRST, input);
+    token = strtok(input, "\r\n");
     while (token != NULL)
     {
-        memcpy(buffer[count++], token, strlen(token) + 1);
-        token = strtok(NULL, " ");
+        char *buf_ptr = buf_line;
+        memset(buf_line, 0, MAX_LINE_LEN);
+        memcpy(buf_line, token, strlen(token) + 1);
+        token = strtok(NULL, "\r\n");
+        // tackle the start line of http request
+        if (first_line)
+        {
+            int next_token_type = K_METHOD;
+            for (int j = 0; j < MAX_BUF_LEN; ++j)
+            {
+                switch (next_token_type)
+                {
+                case K_METHOD:
+                    if (*buf_ptr == ' ')
+                    {
+                        next_token_type = K_HOST;
+                    }
+                    *request_type_ptr++ = *buf_ptr++;
+                    break;
+                case K_HOST:
+                    if (*buf_ptr == '/')
+                    {
+                        if (*(buf_ptr - 1) != '/' && *(buf_ptr - 1) != ':')
+                        {
+                            next_token_type = K_FILE;
+                            // do not advance buf_ptr as we need it for K_FILE
+                            break;
+                        }
+                    }
+                    *request_host_ptr++ = *buf_ptr++;
+                    break;
+                case K_FILE:
+                    if (*buf_ptr == ' ')
+                    {
+                        next_token_type = K_UNKNOWN;
+                        break;
+                    }
+                    *request_file_ptr++ = *buf_ptr++;
+                    break;
+                case K_UNKNOWN:
+                    break;
+                }
+            }
+            printf("%s[proxy server] client request_type: %s%s\n", KGRN, request_type, KRST);
+            printf("%s[proxy server] client request_host: %s%s\n", KGRN, request_host, KRST);
+            printf("%s[proxy server] client request_file: %s%s\n", KGRN, request_file, KRST);
+            if (strcmp(request_type, "GET ") != 0)
+            {
+                printf("%s[proxy server] request method:%s not supported! %s\n", KGRN, request_type, KRST);
+                return -1;
+            }
+            first_line = 0;
+            sprintf(request_literal, "%s%s HTTP/1.0\r\n", request_type, request_file);
+            sprintf(request_literal, "%sHost: %s\r\n", request_literal, request_host);
+            sprintf(request_literal, "%s%s", request_literal, user_agent_hdr);
+            sprintf(request_literal, "%sConnection: close\r\nProxy-Connection: close\r\n\r\n", request_literal);
+        }
+        // tackle header and body of http request
+        else
+        {
+            // do nothing
+        }
     }
-    // Only support HTTP GET method!
-    if (strcmp(request_type, "GET") != 0)
-    {
-        return -1;
-    }
-
-    if (strstr(buffer[1], "https://") != NULL)
-    {
-        host_start = &buffer[1][8];
-    }
-    else if (strstr(buffer[1], "http://") != NULL)
-    {
-        host_start = &buffer[1][7];
-    }
-    else
-    {
-        host_start = &buffer[1][0];
-    }
-    while (host_start[i] != '/')
-    {
-        i++;
-    }
-
-    memcpy(request_host, host_start, i);
-    memcpy(request_host + i, "\0", 1);
-    memcpy(request_file, host_start + i, strlen(buffer[1]) - strlen(request_host) + 1);
-
-    sprintf(request_literal, "%s %s HTTP/1.0\r\n", request_type, request_file);
-    sprintf(request_literal, "%sHost: %s\r\n", request_literal, request_host);
-    sprintf(request_literal, "%s%s", request_literal, user_agent_hdr);
-    sprintf(request_literal, "%sConnection: close\r\nProxy-Connection: close\r\n\r\n", request_literal); // Holy fuck!!!  \r\n\r\n
-
-    printf("request_type: %s\n", request_type);
-    printf("request_host: %s\n", request_host);
-    printf("request_file: %s\n", request_file);
-
+    printf("%s[proxy server] forwared request: %s\n%s\n", KGRN, KRST, request_literal);
     return 0;
 }
 
@@ -148,34 +203,38 @@ void do_proxy(const char *http_request, const char *request_host, char *request_
     char recv_buffer[MAX_OBJECT_SIZE];
     rio_t rio_server_buf;
     int client_fd;
-    char hostname[32];
-    char port[16];
-    int i = 0;
-    int hostname_len = 0;
-    int port_len = 0;
-    memset(hostname, 0, sizeof(hostname));
-    memset(port, 0, sizeof(port));
-    char *p = request_host;
-    while (request_host[i] != ':')
-    {
-        hostname_len++;
-        i++;
-    }
-    memcpy(hostname, request_host, hostname_len);
+    char hostname[HOST_LEN];
+    char port[HOST_LEN];
 
-    while (request_host[i] != 0)
+    int host_addr_start = 0;
+    if (strstr(request_host, "http://") != NULL)
     {
-        port_len++;
-        i++;
+        host_addr_start = 7;
     }
-    memcpy(port, request_host + hostname_len + 1, port_len);
+    else if (strstr(request_host, "https://") != NULL)
+    {
+        host_addr_start = 8;
+    }
+    char request_host_in[HOST_LEN];
+    memcpy(request_host_in, request_host + host_addr_start, HOST_LEN - host_addr_start);
+    int len = strlen(request_host_in);
+    int delimit_idx = len - 1;
+    while (delimit_idx > 0)
+    {
+        if (request_host_in[delimit_idx] == ':')
+        {
+            break;
+        }
+        --delimit_idx;
+    }
+
+    memcpy(hostname, request_host_in, delimit_idx);
+    memcpy(port, request_host_in + delimit_idx + 1, len - delimit_idx);
 
     client_fd = Open_clientfd(hostname, port);
     printf("Connected to server!\n");
     Rio_readinitb(&rio_server_buf, client_fd);
     Rio_writen(client_fd, http_request, strlen(http_request)); // Send request to server
-    Rio_writen(client_fd, "Connection: close\n", strlen("Connection: close\n"));
-    Rio_writen(client_fd, "Proxy-Connection: close\n", strlen("Proxy-Connection: close\n"));
 
     int byte_read = 0;
     int object_size = 0;
@@ -191,47 +250,84 @@ void do_proxy(const char *http_request, const char *request_host, char *request_
     }
 }
 
+/**
+ * @brief  main wroker thread to handle each socket connection
+ *
+ * @param conn_fd_p    socket connection fd
+ * @return void*
+ */
 void *proxy_thread(void *conn_fd_p)
 {
+    char buf_line[MAX_LINE_LEN];
     char http_request[MAX_BUF_LEN];
     char buf_recv[MAX_BUF_LEN];
+    char *buf_ptr = buf_recv;
     rio_t rio_client_buf;
     int conn_fd = *(int *)conn_fd_p;
     free(conn_fd_p);
 
     Rio_readinitb(&rio_client_buf, conn_fd);
-
     while (1)
     {
         char request_host[HOST_LEN];
         char request_file[FILE_LEN];
-        if (Rio_readlineb(&rio_client_buf, buf_recv, MAX_BUF_LEN) < 0)
-        {
-            printf("ERROR!\n");
-        }
-        printf("Proxy receive %ld byte(s) from client, contents: %s", strlen(buf_recv), buf_recv);
-
+        memset(request_host, 0, HOST_LEN);
+        memset(request_file, 0, FILE_LEN);
+        memset(buf_recv, 0, MAX_BUF_LEN);
         memset(http_request, 0, MAX_BUF_LEN);
+
+        int byte_read = 0;
+        int64_t count = 0;
+        // fetch and accumulate one http request
+        while (1)
+        {
+            memset(buf_line, 0, MAX_LINE_LEN);
+            if ((byte_read = Rio_readlineb(&rio_client_buf, buf_line, MAX_BUF_LEN)) < 0)
+            {
+                printf("%s[proxy server] readlineb error! %s\n", KGRN, KRST);
+                // only way to exit
+                return;
+            }
+            if (byte_read == 0)
+            {
+                count++;
+                if (count % 10000000 == 0)
+                {
+                    printf("%s[proxy server] waiting... %s\n", KGRN, KRST);
+                }
+                continue;
+            }
+            printf("%s[proxy server] receives %ld byte(s) raw input: %s%s\n", KGRN, strlen(buf_line), KRST, buf_line);
+            memcpy(buf_ptr, buf_line, byte_read);
+            buf_ptr += byte_read;
+            // An empty line indicates the end of one http request
+            if (byte_read == 2 && strcmp(buf_line, "\r\n") == 0)
+            {
+                break;
+            }
+        }
+
+        // parse the http request, only GET method is supported
         if (parse_http_request(buf_recv, http_request, request_host, request_file) != 0)
         {
-            // TODO too many errors would cause client close the connection
-            // char *error_msg = "HTTP requested type error, only GET method supported!\n";
-            // printf("%s", error_msg);
-            // Rio_writen(conn_fd, error_msg, strlen(error_msg));
+            char *error_message = "HTTP/1.0 501 Not implemented\r\n\r\n";
+            Rio_writen(conn_fd, error_message, strlen(error_message));
             continue;
         }
+
         // check if it's already cached. request to server if not
         struct MemCache *object = check_cached(request_host, request_file);
         if (object)
         {
-            Rio_writen(conn_fd, object->data, object->size); // Forward reply to client
+            // forward reply to client
+            Rio_writen(conn_fd, object->data, object->size);
         }
         else
         {
             do_proxy(http_request, request_host, request_file, conn_fd);
         }
     }
-    // TODO when to exit?
+    // Should never reach here
     return;
 }
 
@@ -253,13 +349,14 @@ int main(int argc, char *argv[])
     listen_port = argv[1];
     listen_fd = Open_listenfd(listen_port);
     sock_len = sizeof(sock_storage);
+    printf("%s[proxy server] main thread started, waiting for connection... %s\n", KGRN, KRST);
     while (1)
     {
         int *conn_fd_p = malloc(sizeof(int));
         pthread_t *tid_p = malloc(sizeof(pthread_t));
         *conn_fd_p = Accept(listen_fd, &sock_storage, &sock_len);
         Getnameinfo(&sock_storage, sock_len, host, MAX_NUM, port, MAX_NUM, 0);
-        printf("Proxy accepted the connection by the client<%s, %s>...\n", host, port);
+        printf("%s[proxy server] accepted the connection by the client<%s, %s>...%s\n", KGRN, host, port, KRST);
         Pthread_create(tid_p, NULL, proxy_thread, (void *)conn_fd_p);
         Pthread_detach(*tid_p);
         free(tid_p);
