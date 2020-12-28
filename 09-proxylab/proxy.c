@@ -100,6 +100,26 @@ int cache_oject(const char *const request_host, const char *const request_file, 
     return 0;
 }
 
+void Rio_writen_socket(int fd, void *usrbuf, size_t n)
+{
+    while (1)
+    {
+        int rc = rio_writen(fd, usrbuf, n);
+        if (rc == n)
+        {
+            return;
+        }
+        else if (rc == EPIPE)
+        {
+            continue;
+        }
+        else
+        {
+            unix_error("Rio_writen_socket error");
+        }
+    }
+}
+
 /**
  * @brief parse the raw http request and extract the request host and request file, generate the http request
  * which would be sent to server if necessary
@@ -126,7 +146,11 @@ int parse_http_request(const char *const input, const char *const request_litera
     char *request_host_ptr = request_host;
     char *request_file_ptr = request_file;
 
-    printf("%s[proxy server] client full http request:%s\n-----------------------------------\n%s-----------------------------------\n", KGRN, KRST, input);
+    printf("%s[proxy server] client full http request:", KGRN);
+    printf("-----------------------------------\n");
+    printf("%s%s", input, KRST);
+    printf("-----------------------------------\n");
+
     token = strtok(input, "\r\n");
     // an empty line
     if (strlen(input) == 0)
@@ -244,7 +268,7 @@ void do_proxy(const char *const http_request, const char *const request_host, co
     client_fd = Open_clientfd(hostname, port);
     printf("Connected to server!\n");
     Rio_readinitb(&rio_server_buf, client_fd);
-    Rio_writen(client_fd, http_request, strlen(http_request)); // Send request to server
+    Rio_writen_socket(client_fd, http_request, strlen(http_request)); // Send request to server
 
     int byte_read = 0;
     int object_size = 0;
@@ -252,7 +276,7 @@ void do_proxy(const char *const http_request, const char *const request_host, co
     {
         printf("%s", recv_buffer);
         object_size += byte_read;
-        Rio_writen(conn_fd, recv_buffer, byte_read); // Forward reply to client
+        Rio_writen_socket(conn_fd, recv_buffer, byte_read); // Forward reply to client
     }
     if (object_size < MAX_OBJECT_SIZE)
     {
@@ -294,9 +318,17 @@ void *proxy_thread(void *conn_fd_p)
             memset(buf_line, 0, MAX_LINE_LEN);
             if ((byte_read = Rio_readlineb(&rio_client_buf, buf_line, MAX_BUF_LEN)) < 0)
             {
-                printf("%s[proxy server] readlineb error! %s\n", KGRN, KRST);
-                // only way to exit
-                return;
+                // server should not terminate in case of a prematurely closed socket
+                if (byte_read == -1 && errno == ECONNRESET)
+                {
+                    continue;
+                }
+                else
+                {
+                    printf("%s[proxy server] readlineb error! %s\n", KGRN, KRST);
+                    // only way to exit!
+                    return;
+                }
             }
             if (byte_read == 0)
             {
@@ -327,7 +359,7 @@ void *proxy_thread(void *conn_fd_p)
         if (parse_http_request(buf_recv, forwarded_http_request, request_host, request_file) != 0)
         {
             char *error_message = "HTTP/1.0 501 Not implemented\r\n\r\n";
-            Rio_writen(conn_fd, error_message, strlen(error_message));
+            Rio_writen_socket(conn_fd, error_message, strlen(error_message));
             continue;
         }
 
@@ -338,8 +370,8 @@ void *proxy_thread(void *conn_fd_p)
             // forward reply to client
             printf("%s[proxy server] find cache object locally, sending to client%s\n", KGRN, KRST);
             char *header_message = "HTTP/1.0 200 OK\r\n";
-            Rio_writen(conn_fd, header_message, strlen(header_message));
-            Rio_writen(conn_fd, object->data, object->size);
+            Rio_writen_socket(conn_fd, header_message, strlen(header_message));
+            Rio_writen_socket(conn_fd, object->data, object->size);
         }
         else
         {
