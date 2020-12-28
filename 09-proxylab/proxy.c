@@ -1,5 +1,15 @@
-#include "csapp.h"
+/*
+  A simple mulit-thread proxy server which
+  1) supports HTTP/1.0 GET method
+  2) supports in-memory cache for faster response
 
+  Limits/todos:
+  1) replace rwlock for each memcache with read-copy-update
+  2) suppport full request type of HTTP, includes POST, PUT, HEAD, TRACE etc.
+
+*/
+
+#include "csapp.h"
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
@@ -32,6 +42,8 @@ struct MemCache
     char *data;
     int size;
     struct MemCache *next;
+    // A more efficient approach would be using RCU(Read-Copy-Update
+    pthread_rwlock_t rwlock;
 };
 
 struct MemCacheManager
@@ -39,13 +51,23 @@ struct MemCacheManager
     struct MemCache *head;
     int cached_size;
     int cached_num;
+    // Lock to ensure exlusive traversal of MemCache linked list
+    pthread_mutex_t lock;
 };
 
 struct MemCacheManager cache_manager;
 
-//TODO Add synchronization and lock for multi_thread
-struct MemCache *check_cached(const char *const request_host, const char *const request_file)
+/**
+ * @brief Check if the request object from client is already cached in memory
+ *
+ * @param[in] request_host             Host name for requested object
+ * @param[in] request_file             Full file path of requested object
+ * @return struct MemCache* if the object exists in cache, NULL if there is no cache
+ */
+struct MemCache *
+check_cached(const char *const request_host, const char *const request_file)
 {
+    pthread_mutex_lock(&cache_manager.lock);
     struct MemCache *cur = cache_manager.head;
     struct MemCache *prev = NULL;
     while (cur)
@@ -56,27 +78,40 @@ struct MemCache *check_cached(const char *const request_host, const char *const 
             {
                 prev->next = cur->next;
             }
-            // change cur as head as it's recently visited
+            // Change cur as head as it's recently visited
             cur->next = cache_manager.head;
             cache_manager.head = cur;
+            pthread_rwlock_rdlock(&cur->rwlock);
+            pthread_mutex_unlock(&cache_manager.lock);
             return cur;
         }
         prev = cur;
         cur = cur->next;
     }
+    pthread_mutex_unlock(&cache_manager.lock);
     return 0;
 }
 
-//TODO Add synchronization and lock for multi_thread
-int cache_oject(const char *const request_host, const char *const request_file, const char *const recv_buf, const int object_size)
+/**
+ * @brief Cache the object in a in-memory cache list
+ *
+ * @param[in] request_host           Host the object belongs to
+ * @param[in] request_file           Full path of the object
+ * @param[in] object_buf             Receive buffer which stores the requested object
+ * @param[in] object_size            Size of receive buffer
+ */
+void cache_oject(const char *const request_host, const char *const request_file, const char *const object_buf, const int object_size)
 {
     struct MemCache *new_head = (struct MemCache *)malloc(sizeof(struct MemCache));
     new_head->data = (char *)malloc(object_size);
-    memcpy((void *)new_head->data, (void *)recv_buf, object_size);
+    memcpy((void *)new_head->data, (void *)object_buf, object_size);
     memcpy((void *)new_head->host, (void *)request_host, HOST_LEN);
     memcpy((void *)new_head->file, (void *)request_file, FILE_LEN);
-
+    pthread_rwlock_init(&new_head->rwlock, NULL);
+    pthread_rwlock_rdlock(&new_head->rwlock);
     new_head->size = object_size;
+
+    pthread_mutex_lock(&cache_manager.lock);
     new_head->next = cache_manager.head;
     cache_manager.head = new_head;
     if (cache_manager.cached_size + object_size > MAX_CACHE_SIZE)
@@ -92,14 +127,23 @@ int cache_oject(const char *const request_host, const char *const request_file, 
             prev = cur;
             cur = cur->next;
         }
-        // clean the LRU object
+        // Clean the LRU object
         free((void *)cur->data);
         free((void *)cur);
+        pthread_rwlock_destroy(&cur->rwlock);
         prev->next = NULL;
     }
-    return 0;
+    pthread_mutex_unlock(&cache_manager.lock);
+    return;
 }
 
+/**
+ * @brief A modified version of Rio_writen which handles the error of EPIPE when the socket writen to
+ *        is prematurely closed, in which it would continues to try until succeed
+ * @param fd            Socket fd
+ * @param usrbuf        Buffer to be written
+ * @param n             Number of bytes to be written
+ */
 void Rio_writen_socket(int fd, void *usrbuf, size_t n)
 {
     while (1)
@@ -121,15 +165,15 @@ void Rio_writen_socket(int fd, void *usrbuf, size_t n)
 }
 
 /**
- * @brief parse the raw http request and extract the request host and request file, generate the http request
+ * @brief Parse the raw http request and extract the request host and request file, generate the http request
  * which would be sent to server if necessary
- * @param[in]  input                  input http request string
- * @param[out] request_literal        output http request sent to server
- * @param[out] request_host           hostname: [ip:port]
- * @param[out] request_file           requeste file path on server
- * @return int return 0 on success, return -1 on failure
+ * @param[in]  input                  Input http request string
+ * @param[out] request_literal        Output http request sent to server
+ * @param[out] request_host           Hostname: [ip:port]
+ * @param[out] request_file           Requeste file path on server
+ * @return int Return 0 on success, return -1 on failure
  */
-int parse_http_request(const char *const input, const char *const request_literal, const char *const request_host, const char *const request_file)
+int parse_http_request(const char *const input, const char *const request_literal, char *request_host, char *request_file)
 {
     int i = 0;
     int count = 0;
@@ -152,7 +196,7 @@ int parse_http_request(const char *const input, const char *const request_litera
     printf("-----------------------------------\n");
 
     token = strtok(input, "\r\n");
-    // an empty line
+    // Http request is empty
     if (strlen(input) == 0)
     {
         return -1;
@@ -163,7 +207,7 @@ int parse_http_request(const char *const input, const char *const request_litera
         memset(buf_line, 0, MAX_LINE_LEN);
         memcpy(buf_line, token, strlen(token) + 1);
         token = strtok(NULL, "\r\n");
-        // tackle the start line of http request
+        // Tackle the start line of http request
         if (first_line)
         {
             int next_token_type = K_METHOD;
@@ -184,7 +228,7 @@ int parse_http_request(const char *const input, const char *const request_litera
                         if (*(buf_ptr - 1) != '/' && *(buf_ptr - 1) != ':')
                         {
                             next_token_type = K_FILE;
-                            // do not advance buf_ptr as we need it for K_FILE
+                            // Do not advance buf_ptr as we need it for K_FILE
                             break;
                         }
                     }
@@ -202,7 +246,7 @@ int parse_http_request(const char *const input, const char *const request_litera
                     break;
                 }
             }
-            // in case no / specified
+            // In case no / specified
             if (next_token_type == K_HOST)
             {
                 *request_file_ptr++ = '/';
@@ -221,7 +265,7 @@ int parse_http_request(const char *const input, const char *const request_litera
             sprintf(request_literal, "%s%s", request_literal, user_agent_hdr);
             sprintf(request_literal, "%sConnection: close\r\nProxy-Connection: close\r\n\r\n", request_literal);
         }
-        // tackle header and body of http request
+        // Tackle header and body of http request
         else
         {
             // do nothing
@@ -231,6 +275,14 @@ int parse_http_request(const char *const input, const char *const request_litera
     return 0;
 }
 
+/**
+ * @brief Forward the http request to server
+ *
+ * @param[in] http_request              Http request which should be forwarded to server
+ * @param[in] request_host              Server host
+ * @param[in] request_file              Full path of the requsted file
+ * @param[in] conn_fd                   Connection socket fd
+ */
 void do_proxy(const char *const http_request, const char *const request_host, const char *const request_file, const int conn_fd)
 {
     // A naive implementation, recv_buffer can be a finer granularity
@@ -285,9 +337,9 @@ void do_proxy(const char *const http_request, const char *const request_host, co
 }
 
 /**
- * @brief  main wroker thread to handle each socket connection
+ * @brief  Main wroker thread to handle each socket connection
  *
- * @param conn_fd_p    socket connection fd
+ * @param conn_fd_p    Socket connection fd
  * @return void*
  */
 void *proxy_thread(void *conn_fd_p)
@@ -312,13 +364,13 @@ void *proxy_thread(void *conn_fd_p)
 
         int byte_read = 0;
         int count = 0;
-        // fetch and accumulate one http request
+        // Fetch and accumulate one http request
         while (1)
         {
             memset(buf_line, 0, MAX_LINE_LEN);
             if ((byte_read = Rio_readlineb(&rio_client_buf, buf_line, MAX_BUF_LEN)) < 0)
             {
-                // server should not terminate in case of a prematurely closed socket
+                // Server should not terminate in case of a prematurely closed socket
                 if (byte_read == -1 && errno == ECONNRESET)
                 {
                     continue;
@@ -326,7 +378,7 @@ void *proxy_thread(void *conn_fd_p)
                 else
                 {
                     printf("%s[proxy server] readlineb error! %s\n", KGRN, KRST);
-                    // only way to exit!
+                    // Only way to exit!
                     return;
                 }
             }
@@ -349,13 +401,13 @@ void *proxy_thread(void *conn_fd_p)
             }
         }
 
-        // an empty line
+        // An empty http request, skip further handling
         if (strlen(buf_recv) == 2)
         {
             continue;
         }
 
-        // parse the http request, only GET method is supported
+        // Parse the http request, only GET method is supported
         if (parse_http_request(buf_recv, forwarded_http_request, request_host, request_file) != 0)
         {
             char *error_message = "HTTP/1.0 501 Not implemented\r\n\r\n";
@@ -363,15 +415,16 @@ void *proxy_thread(void *conn_fd_p)
             continue;
         }
 
-        // check if it's already cached. request to server if not
+        // Check if it's already cached. request to server if not
         struct MemCache *object = check_cached(request_host, request_file);
         if (object)
         {
-            // forward reply to client
+            // Forward reply to client
             printf("%s[proxy server] find cache object locally, sending to client%s\n", KGRN, KRST);
             char *header_message = "HTTP/1.0 200 OK\r\n";
             Rio_writen_socket(conn_fd, header_message, strlen(header_message));
             Rio_writen_socket(conn_fd, object->data, object->size);
+            pthread_rwlock_unlock(&object->rwlock);
         }
         else
         {
@@ -400,6 +453,7 @@ int main(int argc, char *argv[])
     listen_port = argv[1];
     listen_fd = Open_listenfd(listen_port);
     sock_len = sizeof(sock_storage);
+    pthread_mutex_init(&cache_manager.lock, NULL);
     printf("%s[proxy server] main thread started, waiting for connection... %s\n", KGRN, KRST);
     while (1)
     {
@@ -419,6 +473,8 @@ int main(int argc, char *argv[])
         cur = cur->next;
         free((void *)to_free->data);
         free((void *)to_free);
+        pthread_rwlock_destroy(&to_free->rwlock);
     }
+    pthread_mutex_destroy(&cache_manager.lock);
     return 0;
 }
