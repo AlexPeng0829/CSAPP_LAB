@@ -128,6 +128,11 @@ int parse_http_request(char *input, char *request_literal, char *request_host, c
 
     printf("%s[proxy server] client full http request:%s\n-----------------------------------\n%s-----------------------------------\n", KGRN, KRST, input);
     token = strtok(input, "\r\n");
+    // an empty line
+    if (strlen(input) == 0)
+    {
+        return -1;
+    }
     while (token != NULL)
     {
         char *buf_ptr = buf_line;
